@@ -100,14 +100,25 @@ async function run() {
   });
 
   // USERS PATCH (admin only)
+  
   app.patch('/users/:id', verifyFBToken, verifyAdmin, async (req, res) => {
-    const id = req.params.id;
-    const roleinfo = req.body;
-    const query = { _id: new ObjectId(id) };
-    const updatedoc = { $set: { role: roleinfo.role } };
-    const result = await usercollection.updateOne(query, updatedoc);
-    res.send(result);
-  });
+  const id = req.params.id;
+  const { role } = req.body;
+
+  // only allow these roles
+  const allowedRoles = ['user', 'manager', 'admin'];
+  if (!allowedRoles.includes(role)) {
+    return res.status(400).send({ message: 'Invalid role' });
+  }
+
+  const result = await usercollection.updateOne(
+    { _id: new ObjectId(id) },
+    { $set: { role } }
+  );
+
+  res.send(result);
+});
+
 
   // GET USER ROLE
   app.get('/users/:email/role', async (req, res) => {
