@@ -62,56 +62,62 @@ async function run() {
   const db = client.db('slubsphere');
   const clubcollection = db.collection('clubs');
   const paymentcollection = db.collection('payments');
-   const usercollection = db.collection('users');
+  const usercollection = db.collection('users');
 
+  // ================= Admin Middleware =================
+  const verifyAdmin = async (req, res, next) => {
+    const email = req.decoded_email;
+    const user = await usercollection.findOne({ email });
 
-   //user apis
-  //  app.post('/users',async (req,res)=>{
-  //   const user=req.body;
-  //   user.role='user';
-  //   user.createdAt=new Date();
-  //   const result=await usercollection.insertOne(user);
-  //   res.send(result)
-  //  })
+    if (!user || user.role !== 'admin') {
+      return res.status(403).send({ message: 'Forbidden: Admin only' });
+    }
+    next();
+  };
 
-  // user apis
-app.post('/users', async (req, res) => {
-  const user = req.body;
+  // ================= USERS API =================
+  app.post('/users', async (req, res) => {
+    const user = req.body;
 
-  // duplicate email check
-  const existingUser = await usercollection.findOne({ email: user.email });
-  if (existingUser) {
-    return res.send({ message: 'user already exists' });
-  }
+    // duplicate email check
+    const existingUser = await usercollection.findOne({ email: user.email });
+    if (existingUser) {
+      return res.send({ message: 'user already exists' });
+    }
 
-  user.role = 'user';
-  user.createdAt = new Date();
+    user.role = 'user';
+    user.createdAt = new Date();
 
-  const result = await usercollection.insertOne(user);
-  res.send(result);
-});
+    const result = await usercollection.insertOne(user);
+    res.send(result);
+  });
 
-//users get
-app.get('/users',verifyFBToken,async (req,res)=>{
-  const cursor=usercollection.find();
-  const result=await cursor.toArray();
-  res.send(result)
-})
-//users patch
-app.patch('/users/:id',async(req,res)=>{
-  const id=req.params.id;
-  const roleinfo=req.body;
-  const query={
-    _id:new ObjectId(id)
-  }
-  const updatedoc={
-    $set:{role:roleinfo.role}
-  }
-  const result=await usercollection.updateOne(query,updatedoc)
-  res.send(result)
-})
+  // USERS GET (admin only)
+  app.get('/users', verifyFBToken, verifyAdmin, async (req, res) => {
+    const cursor = usercollection.find();
+    const result = await cursor.toArray();
+    res.send(result);
+  });
 
-  // ================= GET CLUBS =================
+  // USERS PATCH (admin only)
+  app.patch('/users/:id', verifyFBToken, verifyAdmin, async (req, res) => {
+    const id = req.params.id;
+    const roleinfo = req.body;
+    const query = { _id: new ObjectId(id) };
+    const updatedoc = { $set: { role: roleinfo.role } };
+    const result = await usercollection.updateOne(query, updatedoc);
+    res.send(result);
+  });
+
+  // GET USER ROLE
+  app.get('/users/:email/role', async (req, res) => {
+    const email = req.params.email;
+    const query = { email };
+    const user = await usercollection.findOne(query);
+    res.send({ role: user?.role || 'user' });
+  });
+
+  // ================= CLUBS API =================
   app.get('/clubs', async (req, res) => {
     const email = req.query.email;
     const query = email ? { createremail: email } : {};
@@ -119,15 +125,11 @@ app.patch('/users/:id',async(req,res)=>{
     res.send(result);
   });
 
-  // ================= GET SINGLE CLUB =================
   app.get('/clubs/:id', async (req, res) => {
-    const result = await clubcollection.findOne({
-      _id: new ObjectId(req.params.id),
-    });
+    const result = await clubcollection.findOne({ _id: new ObjectId(req.params.id) });
     res.send(result);
   });
 
-  // ================= CREATE CLUB =================
   app.post('/clubs', verifyFBToken, async (req, res) => {
     const clubData = req.body;
 
@@ -135,7 +137,6 @@ app.patch('/users/:id',async(req,res)=>{
       return res.status(400).send({ message: 'Club name or creator email missing' });
     }
 
-    // Ensure the createremail matches the logged-in Firebase email
     if (clubData.createremail !== req.decoded_email) {
       return res.status(403).send({ message: 'Forbidden: Email mismatch' });
     }
@@ -144,7 +145,7 @@ app.patch('/users/:id',async(req,res)=>{
       const result = await clubcollection.insertOne({
         ...clubData,
         createdAt: new Date(),
-        paymentStatus: 'pending', // default status
+        paymentStatus: 'pending',
       });
 
       res.send({
@@ -210,30 +211,17 @@ app.patch('/users/:id',async(req,res)=>{
     const clubId = session.metadata.clubId;
     const transactionId = session.payment_intent;
 
-    // 🔒 DUPLICATE CHECK
-    const existingPayment = await paymentcollection.findOne({
-      transactionid: transactionId,
-    });
+    const existingPayment = await paymentcollection.findOne({ transactionid: transactionId });
 
     if (existingPayment) {
-      return res.send({
-        success: true,
-        paymentinfo: existingPayment,
-      });
+      return res.send({ success: true, paymentinfo: existingPayment });
     }
 
-    // ✅ UPDATE CLUB
     await clubcollection.updateOne(
       { _id: new ObjectId(clubId) },
-      {
-        $set: {
-          paymentStatus: 'paid',
-          trackingid: generateTrackingId(),
-        },
-      }
+      { $set: { paymentStatus: 'paid', trackingid: generateTrackingId() } }
     );
 
-    // ✅ PAYMENT OBJECT
     const payment = {
       amount: session.amount_total / 100,
       currency: session.currency,
@@ -245,40 +233,62 @@ app.patch('/users/:id',async(req,res)=>{
       paidAt: new Date(),
     };
 
-    // ✅ INSERT ONCE
     await paymentcollection.insertOne(payment);
 
-    res.send({
-      success: true,
-      paymentinfo: payment,
-    });
+    res.send({ success: true, paymentinfo: payment });
   });
+
+  //start
+
+// GET paid clubs (admin only)
+app.get('/admin/paid-clubs', verifyFBToken, verifyAdmin, async (req, res) => {
+  const result = await clubcollection.find({ paymentStatus: 'paid' }).toArray();
+  res.send(result);
+});
+// APPROVE club (admin only)
+app.patch('/admin/clubs/approve/:id', verifyFBToken, verifyAdmin, async (req, res) => {
+  const id = req.params.id;
+
+  const result = await clubcollection.updateOne(
+    { _id: new ObjectId(id) },
+    { $set: { status: 'approved' } }
+  );
+
+  res.send(result);
+});
+// REJECT club (admin only)
+app.delete('/admin/clubs/reject/:id', verifyFBToken, verifyAdmin, async (req, res) => {
+  const id = req.params.id;
+
+  const result = await clubcollection.deleteOne({ _id: new ObjectId(id) });
+  res.send(result);
+});
+
+
+// ================= APPROVED CLUBS (USER SIDE) =================
+app.get('/approved-clubs', async (req, res) => {
+  const result = await clubcollection
+    .find({ status: 'approved' })
+    .sort({ createdAt: -1 })
+    .toArray();
+
+  res.send(result);
+});
+
+
+  //end
 
   // ================= PAYMENT HISTORY =================
   app.get('/payments', verifyFBToken, async (req, res) => {
     const email = req.query.email;
 
-    if (!email) {
-      return res.status(400).send({ message: 'Email query missing' });
-    }
+    if (!email) return res.status(400).send({ message: 'Email query missing' });
+    if (email !== req.decoded_email) return res.status(403).send({ message: 'Forbidden access' });
 
-    if (email !== req.decoded_email) {
-      return res.status(403).send({ message: 'Forbidden access' });
-    }
+    const clubs = await clubcollection.find({ createremail: email }).toArray();
+    const clubIds = clubs.map(club => club._id.toString());
 
-    // find clubs created by user
-    const clubs = await clubcollection
-      .find({ createremail: email })
-      .toArray();
-
-    const clubIds = clubs.map((club) => club._id.toString());
-
-    // find payments for those clubs
-    const payments = await paymentcollection
-      .find({ userid: { $in: clubIds } })
-      .sort({ paidAt: -1 })
-      .toArray();
-
+    const payments = await paymentcollection.find({ userid: { $in: clubIds } }).sort({ paidAt: -1 }).toArray();
     res.send(payments);
   });
 }
