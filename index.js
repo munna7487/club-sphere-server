@@ -90,6 +90,27 @@ app.post('/users', async (req, res) => {
   const result = await usercollection.insertOne(user);
   res.send(result);
 });
+
+//users get
+app.get('/users',verifyFBToken,async (req,res)=>{
+  const cursor=usercollection.find();
+  const result=await cursor.toArray();
+  res.send(result)
+})
+//users patch
+app.patch('/users/:id',async(req,res)=>{
+  const id=req.params.id;
+  const roleinfo=req.body;
+  const query={
+    _id:new ObjectId(id)
+  }
+  const updatedoc={
+    $set:{role:roleinfo.role}
+  }
+  const result=await usercollection.updateOne(query,updatedoc)
+  res.send(result)
+})
+
   // ================= GET CLUBS =================
   app.get('/clubs', async (req, res) => {
     const email = req.query.email;
