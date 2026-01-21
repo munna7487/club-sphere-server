@@ -62,7 +62,34 @@ async function run() {
   const db = client.db('slubsphere');
   const clubcollection = db.collection('clubs');
   const paymentcollection = db.collection('payments');
+   const usercollection = db.collection('users');
 
+
+   //user apis
+  //  app.post('/users',async (req,res)=>{
+  //   const user=req.body;
+  //   user.role='user';
+  //   user.createdAt=new Date();
+  //   const result=await usercollection.insertOne(user);
+  //   res.send(result)
+  //  })
+
+  // user apis
+app.post('/users', async (req, res) => {
+  const user = req.body;
+
+  // duplicate email check
+  const existingUser = await usercollection.findOne({ email: user.email });
+  if (existingUser) {
+    return res.send({ message: 'user already exists' });
+  }
+
+  user.role = 'user';
+  user.createdAt = new Date();
+
+  const result = await usercollection.insertOne(user);
+  res.send(result);
+});
   // ================= GET CLUBS =================
   app.get('/clubs', async (req, res) => {
     const email = req.query.email;
