@@ -63,6 +63,7 @@ async function run() {
   const clubcollection = db.collection('clubs');
   const paymentcollection = db.collection('payments');
   const usercollection = db.collection('users');
+const eventcollection = db.collection('events');
 
   // ================= Admin Middleware =================
   const verifyAdmin = async (req, res, next) => {
@@ -74,6 +75,35 @@ async function run() {
     }
     next();
   };
+
+//rate 
+// ================= EVENTS API =================
+
+// CREATE EVENT (manager / club owner)
+app.post('/events', verifyFBToken, async (req, res) => {
+  const event = req.body;
+
+  if (!event.clubId || !event.clubName || !event.title || !event.dateTime) {
+    return res.status(400).send({ message: 'Missing required fields' });
+  }
+
+  // security check
+  if (event.createrEmail !== req.decoded_email) {
+    return res.status(403).send({ message: 'Forbidden access' });
+  }
+
+  const newEvent = {
+    ...event,
+    clubId: new ObjectId(event.clubId),
+    createdAt: new Date(),
+    status: 'upcoming',
+  };
+
+  const result = await eventcollection.insertOne(newEvent);
+  res.send(result);
+});
+
+
 
   // ================= USERS API =================
   app.post('/users', async (req, res) => {
