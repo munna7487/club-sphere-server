@@ -78,13 +78,53 @@ const eventRegisterCollection = db.collection('eventRegisters');
 
 //rate 
 // ================= GET ALL EVENTS =================
-app.get('/events', async (req, res) => {
-  const events = await eventcollection
-    .find({ status: 'upcoming' })
-    .sort({ createdAt: -1 })
-    .toArray();
+// app.get('/events', async (req, res) => {
+//   const events = await eventcollection
+//     .find({ status: 'upcoming' })
+//     .sort({ createdAt: -1 })
+//     .toArray();
 
-  res.send(events);
+//   res.send(events);
+// });
+//12 ta 
+
+// ================= GET EVENTS BY CLUB =================
+app.get('/clubs/:id/events', async (req, res) => {
+  const clubId = req.params.id;
+
+  try {
+    const events = await eventcollection
+      .find({ clubId: new ObjectId(clubId), status: 'upcoming' })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.send(events);
+  } catch (error) {
+    console.error('Error fetching club events:', error);
+    res.status(500).send({ message: 'Server error' });
+  }
+});
+
+// ================= GET EVENTS (WITH SEARCH) =================
+app.get('/events', async (req, res) => {
+  try {
+    const search = req.query.search || '';
+
+    const query = {
+      status: 'upcoming',
+      title: { $regex: search, $options: 'i' }
+    };
+
+    const events = await eventcollection
+      .find(query)
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.send(events);
+  } catch (error) {
+    console.error('Events fetch error:', error);
+    res.status(500).send({ message: 'Server error' });
+  }
 });
 // ================= REGISTER EVENT =================
 app.post('/event-register', verifyFBToken, async (req, res) => {
@@ -353,7 +393,43 @@ app.get('/approved-clubs', async (req, res) => {
 
 
 //munna
+app.get('/approved-club-names', async (req, res) => {
+  const clubs = await clubcollection
+    .find({ status: 'approved' })
+    .project({ clubName: 1 })
+    .toArray();
 
+  res.send(clubs);
+});
+app.get('/approved-clubs', async (req, res) => {
+  try {
+    const { clubName, search } = req.query;
+
+    let query = { status: 'approved' };
+
+    // dropdown selection
+    if (clubName && clubName !== 'ALL') {
+      query.clubName = clubName;
+    }
+
+    // search
+    if (search && search.trim() !== '') {
+      query.clubName = { $regex: search, $options: 'i' };
+    }
+
+    const result = await clubcollection
+      .find(query)
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.send(result);
+  } catch (err) {
+    res.status(500).send({ message: 'Server error' });
+  }
+});
+
+
+//ama a
 // ================= APPROVED CLUBS (WITH SEARCH) =================
 app.get('/approved-clubs', async (req, res) => {
   try {
