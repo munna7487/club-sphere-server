@@ -64,7 +64,7 @@ async function run() {
   const paymentcollection = db.collection('payments');
   const usercollection = db.collection('users');
 const eventcollection = db.collection('events');
-
+const eventRegisterCollection = db.collection('eventRegisters');
   // ================= Admin Middleware =================
   const verifyAdmin = async (req, res, next) => {
     const email = req.decoded_email;
@@ -77,6 +77,41 @@ const eventcollection = db.collection('events');
   };
 
 //rate 
+// ================= GET ALL EVENTS =================
+app.get('/events', async (req, res) => {
+  const events = await eventcollection
+    .find({ status: 'upcoming' })
+    .sort({ createdAt: -1 })
+    .toArray();
+
+  res.send(events);
+});
+// ================= REGISTER EVENT =================
+app.post('/event-register', verifyFBToken, async (req, res) => {
+  const { eventId, eventTitle } = req.body;
+  const email = req.decoded_email;
+
+  // duplicate check
+  const alreadyRegistered = await eventRegisterCollection.findOne({
+    eventId,
+    email,
+  });
+
+  if (alreadyRegistered) {
+    return res.send({ message: 'Already registered' });
+  }
+
+  const registerInfo = {
+    eventId,
+    eventTitle,
+    email,
+    registeredAt: new Date(),
+  };
+
+  const result = await eventRegisterCollection.insertOne(registerInfo);
+  res.send(result);
+});
+
 // ================= EVENTS API =================
 
 // CREATE EVENT (manager / club owner)
@@ -317,7 +352,66 @@ app.get('/approved-clubs', async (req, res) => {
 });
 
 
-  //end
+//munna
+
+// ================= APPROVED CLUBS (WITH SEARCH) =================
+app.get('/approved-clubs', async (req, res) => {
+  try {
+    const search = req.query.search;
+
+    let query = { status: 'approved' };
+
+    // 🔍 clubName search (partial + case-insensitive)
+    if (search && search.trim() !== '') {
+      query.clubName = { $regex: search, $options: 'i' };
+    }
+
+    const result = await clubcollection
+      .find(query)
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.send(result);
+  } catch (error) {
+    console.error('Approved clubs search error:', error);
+    res.status(500).send({ message: 'Server error' });
+  }
+});
+
+ //end
+// ================= GET MY EVENTS =================
+// GET MY EVENTS
+app.get('/my-events', verifyFBToken, async (req, res) => {
+  const email = req.decoded_email;  // Firebase token থেকে login user email
+
+  const events = await eventcollection
+    .find({ createrEmail: email }) // শুধু login user এর event
+    .sort({ createdAt: -1 })
+    .toArray();
+
+  res.send(events);
+});
+// ================= DELETE EVENT =================
+app.delete('/events/:id', verifyFBToken, async (req, res) => {
+  const id = req.params.id;
+  const email = req.decoded_email;
+
+  const event = await eventcollection.findOne({ _id: new ObjectId(id) });
+
+  if (!event) {
+    return res.status(404).send({ message: 'Event not found' });
+  }
+
+  if (event.createrEmail !== email) {
+    return res.status(403).send({ message: 'Forbidden access' });
+  }
+
+  const result = await eventcollection.deleteOne({ _id: new ObjectId(id) });
+  res.send(result);
+});
+
+
+ 
 
   // ================= PAYMENT HISTORY =================
   app.get('/payments', verifyFBToken, async (req, res) => {
