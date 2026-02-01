@@ -311,6 +311,37 @@ async function run() {
 
 
   //addd new id for enent 
+
+
+
+  // DELETE CLUB - only creator can delete
+app.delete('/clubs/:id', verifyFBToken, async (req, res) => {
+  const id = req.params.id;
+  const email = req.decoded_email;
+
+  try {
+    const club = await clubcollection.findOne({ _id: new ObjectId(id) });
+
+    if (!club) {
+      return res.status(404).send({ message: 'Club not found' });
+    }
+
+    if (club.createremail !== email) {
+      return res.status(403).send({ message: 'You can only delete your own clubs' });
+    }
+
+    const result = await clubcollection.deleteOne({ _id: new ObjectId(id) });
+
+    if (result.deletedCount === 0) {
+      return res.status(500).send({ message: 'Failed to delete club' });
+    }
+
+    res.send({ success: true, message: 'Club deleted successfully' });
+  } catch (err) {
+    console.error('Delete club error:', err);
+    res.status(500).send({ message: 'Server error' });
+  }
+});
 // ================= GET SINGLE EVENT =================
 // ================= GET SINGLE EVENT =================
 app.get('/events/:id', async (req, res) => {
