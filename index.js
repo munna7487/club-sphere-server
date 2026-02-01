@@ -312,15 +312,13 @@ async function run() {
 
   //addd new id for enent 
 // ================= GET SINGLE EVENT =================
-// run() ফাংশনের ভিতরে, অন্য route-গুলোর পাশে যোগ করো
-
+// ================= GET SINGLE EVENT =================
 app.get('/events/:id', async (req, res) => {
   try {
     const id = req.params.id;
 
-    // ID valid কি না চেক (optional কিন্তু ভালো)
     if (!ObjectId.isValid(id)) {
-      return res.status(400).json({ message: 'Invalid event ID format' });
+      return res.status(400).json({ message: 'Invalid event ID' });
     }
 
     const event = await eventcollection.findOne({ _id: new ObjectId(id) });
@@ -331,8 +329,8 @@ app.get('/events/:id', async (req, res) => {
 
     res.json(event);
   } catch (error) {
-    console.error('Error in /events/:id:', error);
-    res.status(500).json({ message: 'Server error while fetching event' });
+    console.error('Error fetching single event:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 });
   //
