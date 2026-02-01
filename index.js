@@ -64,7 +64,7 @@ const client = new MongoClient(uri, {
 });
 
 async function run() {
-  await client.connect();
+  // await client.connect();
   console.log("✅ MongoDB connected");
   const db = client.db('slubsphere');
   const clubcollection = db.collection('clubs');
@@ -309,6 +309,33 @@ async function run() {
     res.send({ success: true, paymentinfo: payment });
   });
 
+
+  //addd new id for enent 
+// ================= GET SINGLE EVENT =================
+// run() ফাংশনের ভিতরে, অন্য route-গুলোর পাশে যোগ করো
+
+app.get('/events/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    // ID valid কি না চেক (optional কিন্তু ভালো)
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid event ID format' });
+    }
+
+    const event = await eventcollection.findOne({ _id: new ObjectId(id) });
+
+    if (!event) {
+      return res.status(404).json({ message: 'Event not found' });
+    }
+
+    res.json(event);
+  } catch (error) {
+    console.error('Error in /events/:id:', error);
+    res.status(500).json({ message: 'Server error while fetching event' });
+  }
+});
+  //
   // GET paid clubs (admin only)
   app.get('/admin/paid-clubs', verifyFBToken, verifyAdmin, async (req, res) => {
     const result = await clubcollection.find({ paymentStatus: 'paid' }).toArray();
