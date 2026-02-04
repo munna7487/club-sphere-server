@@ -230,6 +230,7 @@ async function run() {
       const result = await clubcollection.insertOne({
         ...clubData,
         createdAt: new Date(),
+          clubpayment: 'pay',
         paymentStatus: 'pending',
       });
       res.send({
@@ -242,7 +243,7 @@ async function run() {
       res.status(500).send({ message: 'Internal server error' });
     }
   });
-
+//alahne cng  
   // ================= STRIPE CHECKOUT =================
   app.post('/create-checkout-session', async (req, res) => {
     const info = req.body;
