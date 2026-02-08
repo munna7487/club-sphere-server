@@ -232,6 +232,7 @@ async function run() {
         createdAt: new Date(),
           clubpayment: 'pay',
         paymentStatus: 'pending',
+        membernumber: '0',
       });
       res.send({
         success: true,
@@ -243,7 +244,7 @@ async function run() {
       res.status(500).send({ message: 'Internal server error' });
     }
   });
-//alahne cng  
+
   // ================= STRIPE CHECKOUT =================
   app.post('/create-checkout-session', async (req, res) => {
     const info = req.body;
@@ -276,6 +277,26 @@ async function run() {
     res.send({ url: session.url });
   });
 
+  // get 3 upcoming data 
+  // Get latest 3 approved & paid clubs for Featured section
+// Get top 3 clubs with highest membernumber, approved and paid
+app.get('/featured-clubs', async (req, res) => {
+  try {
+    const featured = await clubcollection
+      .find({ status: 'approved', paymentStatus: 'paid' })
+      .sort({ membernumber: -1 }) // membernumber descending
+      .limit(3)
+      .toArray();
+
+    res.send(featured);
+  } catch (err) {
+    console.error('Error fetching featured clubs:', err);
+    res.status(500).send({ message: 'Server error' });
+  }
+});
+
+
+  
   // ================= PAYMENT SUCCESS =================
   app.patch('/payment-success', async (req, res) => {
     const sessionId = req.query.session_id;
@@ -309,11 +330,329 @@ async function run() {
     await paymentcollection.insertOne(payment);
     res.send({ success: true, paymentinfo: payment });
   });
+// 1. Create checkout session for EVENT payment
+app.post('/create-event-payment', verifyFBToken, async (req, res) => {
+  const { eventId, email } = req.body;
 
+  if (!eventId || !email) {
+    return res.status(400).json({ error: 'eventId and email are required' });
+  }
 
-  //addd new id for enent 
+  if (email !== req.decoded_email) {
+    return res.status(403).json({ error: 'Unauthorized: email mismatch' });
+  }
 
+  let eventObjectId;
+  try {
+    eventObjectId = new ObjectId(eventId);
+  } catch (err) {
+    return res.status(400).json({ error: 'Invalid event ID format' });
+  }
 
+  try {
+    // Already registered চেক (ObjectId দিয়ে)
+    const alreadyRegistered = await eventRegisterCollection.findOne({
+      eventId: eventObjectId,
+      email,
+    });
+
+    if (alreadyRegistered) {
+      return res.status(400).json({ error: 'You are already registered' });
+    }
+
+    
+    const event = await eventcollection.findOne({ _id: eventObjectId });
+
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    if (event.eventType?.toLowerCase() === 'free') {
+      return res.status(400).json({ error: 'Free event — no payment needed' });
+    }
+
+    const amountInCents = Math.round((event.price || 0) * 100);
+
+    if (amountInCents <= 0) {
+      return res.status(400).json({ error: 'Invalid event price' });
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      customer_email: email,
+      line_items: [
+        {
+          price_data: {
+            currency: 'usd',
+            unit_amount: amountInCents,
+            product_data: {
+              name: event.title || 'Event Registration',
+              description: `Registration for ${event.title}`,
+            },
+          },
+          quantity: 1,
+        },
+      ],
+      mode: 'payment',
+      metadata: {
+        eventId: eventId, 
+        email,
+        type: 'event_registration',
+        clubName: event.clubName || 'Unknown',
+        title: event.title || 'Event',
+      },
+      success_url: `${process.env.SITE_DOMAIN}/event-payment-success?session_id={CHECKOUT_SESSION_ID}&eventId=${eventId}`,
+      cancel_url: `${process.env.SITE_DOMAIN}/event-payment-cancelled?eventId=${eventId}`,
+    });
+
+    res.json({ url: session.url });
+  } catch (err) {
+    console.error('Create event payment error:', err);
+    res.status(500).json({ error: 'Failed to create payment session' });
+  }
+});
+
+// 2. Payment success - registration confirm
+app.patch('/event-payment-success', verifyFBToken, async (req, res) => {
+  const sessionId = req.query.session_id;
+
+  if (!sessionId) {
+    console.log("[SUCCESS] No session_id");
+    return res.status(400).json({ error: 'session_id is required' });
+  }
+
+  try {
+    console.log("[SUCCESS] Fetching session:", sessionId);
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    if (session.payment_status !== 'paid') {
+      console.log("[SUCCESS] Payment not paid");
+      return res.status(400).json({ error: 'Payment not completed' });
+    }
+
+    const { eventId, email, type } = session.metadata;
+    console.log("[SUCCESS] Metadata:", { eventId, email, type });
+
+    if (type !== 'event_registration' || !eventId || !email) {
+      return res.status(400).json({ error: 'Invalid session metadata' });
+    }
+
+    if (email !== req.decoded_email) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    let eventObjectId;
+    try {
+      eventObjectId = new ObjectId(eventId);
+    } catch (err) {
+      console.log("[SUCCESS] Invalid eventId");
+      return res.status(400).json({ error: 'Invalid event ID' });
+    }
+
+    // Double check
+    const alreadyExists = await eventRegisterCollection.findOne({
+      eventId: eventObjectId,
+      email,
+    });
+
+    if (alreadyExists) {
+      console.log("[SUCCESS] Already registered");
+      return res.json({ success: true, message: 'Already registered' });
+    }
+
+    // Save registration
+    const registrationResult = await eventRegisterCollection.insertOne({
+      eventId: eventObjectId,
+      email,
+      registeredAt: new Date(),
+      paymentStatus: 'paid',
+      transactionId: session.payment_intent,
+      amount: session.amount_total / 100,
+      currency: session.currency,
+      paidAt: new Date(),
+      eventTitle: session.metadata.title,
+      clubName: session.metadata.clubName,
+    });
+
+    console.log("[SUCCESS] Registered:", registrationResult.insertedId);
+
+    // attendees +1
+    const updateResult = await eventcollection.updateOne(
+      { _id: eventObjectId },
+      { $inc: { attendees: 1 } }
+    );
+
+    console.log("[SUCCESS] Update result:", updateResult);
+
+    if (updateResult.matchedCount === 0) {
+      console.log("[SUCCESS] ERROR: Event not found for ID:", eventId);
+    } else {
+      console.log("[SUCCESS] attendees +1 done");
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[SUCCESS] Error:", err);
+    res.status(500).json({ error: 'Failed to confirm' });
+  }
+});
+  
+
+// Free Event Registration (no payment needed)
+app.post('/event-register-free', verifyFBToken, async (req, res) => {
+  const { eventId } = req.body;
+  const email = req.decoded_email;
+
+  if (!eventId) {
+    return res.status(400).json({ error: 'eventId is required' });
+  }
+
+  let eventObjectId;
+  try {
+    eventObjectId = new ObjectId(eventId);
+  } catch (err) {
+    return res.status(400).json({ error: 'Invalid event ID format' });
+  }
+
+  try {
+ 
+    const event = await eventcollection.findOne({ _id: eventObjectId });
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    if (event.eventType?.toLowerCase() !== 'free') {
+      return res.status(400).json({ error: 'This is not a free event' });
+    }
+
+ 
+    const alreadyRegistered = await eventRegisterCollection.findOne({
+      eventId: eventObjectId,
+      email,
+    });
+
+    if (alreadyRegistered) {
+      return res.status(400).json({ error: 'You are already registered' });
+    }
+
+  
+    const currentAttendees = Number(event.attendees || 0);
+    const maxAtt = Number(event.maxAttendees || 999999);
+    if (currentAttendees >= maxAtt) {
+      return res.status(400).json({ error: 'Event is already full' });
+    }
+
+    
+    const registrationResult = await eventRegisterCollection.insertOne({
+      eventId: eventObjectId,
+      email,
+      registeredAt: new Date(),
+      paymentStatus: 'free',
+      eventTitle: event.title || '',
+      clubName: event.clubName || '',
+    });
+
+    // attendees +1 করা
+    await eventcollection.updateOne(
+      { _id: eventObjectId },
+      { $inc: { attendees: 1 } }
+    );
+
+    res.json({
+      success: true,
+      message: 'Successfully registered for free event',
+      registrationId: registrationResult.insertedId,
+    });
+  } catch (err) {
+    console.error('Free event registration error:', err);
+    res.status(500).json({ error: 'Registration failed' });
+  }
+});
+
+// ==================== club check out ====================
+app.post('/create-club-checkout-session', async (req, res) => {
+  const info = req.body;
+  if (!info.membershipFee || !info._id) {
+    return res.status(400).send({ error: 'Membership fee or club ID missing' });
+  }
+  try {
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      customer_email: info.createremail || undefined,
+      line_items: [
+        {
+          price_data: {
+            currency: 'usd',
+            unit_amount: Number(info.membershipFee) * 100,
+            product_data: {
+              name: info.clubName || 'Club Membership',
+            },
+          },
+          quantity: 1,
+        },
+      ],
+      mode: 'payment',
+      metadata: {
+        clubId: info._id,
+        clubName: info.clubName,
+        type: 'club_membership'  
+      },
+      success_url: `${process.env.SITE_DOMAIN}/club-payment-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.SITE_DOMAIN}/club-payment-cancelled`,
+    });
+    console.log('Club checkout created:', session.id, session.url);
+    res.send({ url: session.url });
+  } catch (err) {
+    console.error('Club checkout error:', err);
+    res.status(500).send({ error: err.message || 'Failed to create club checkout' });
+  }
+});
+
+// ==================== club payment SUCCESS ROUTE ====================
+app.patch('/club-payment-success', async (req, res) => {
+  try {
+    const sessionId = req.query.session_id;
+    if (!sessionId) {
+      return res.status(400).send({ error: 'session_id missing' });
+    }
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    console.log('Club session retrieved:', session.id, session.payment_status, session.metadata);
+    if (session.payment_status !== 'paid') {
+      return res.status(400).send({ error: 'Payment not completed' });
+    }
+    const clubId = session.metadata.clubId;
+    if (!clubId) {
+      return res.status(400).send({ error: 'clubId missing in metadata' });
+    }
+    const updateResult = await clubcollection.updateOne(
+      { _id: new ObjectId(clubId) },
+      {
+        $set: {
+          clubpayment: 'paid',  
+          paymentStatus: 'paid',
+          trackingid: generateTrackingId()
+        }
+      }
+    );
+    console.log('Club updated:', updateResult);
+    const payment = {
+      amount: session.amount_total / 100,
+      currency: session.currency,
+      customeremail: session.customer_details?.email || '',
+      userid: clubId,
+      clubname: session.metadata.clubName,
+      transactionid: session.payment_intent,
+      paymentstatus: session.payment_status,
+      paidAt: new Date(),
+      type: 'club_membership'
+    };
+    await paymentcollection.insertOne(payment);
+    res.send({ success: true });
+  } catch (err) {
+    console.error('Club success error:', err);
+    res.status(500).send({ error: 'Club payment failed' });
+  }
+});
 
   // DELETE CLUB - only creator can delete
 app.delete('/clubs/:id', verifyFBToken, async (req, res) => {
