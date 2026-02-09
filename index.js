@@ -16,7 +16,7 @@ try {
   serviceAccount = JSON.parse(decodedKey);
 } catch (err) {
   console.error("❌ Failed to parse Firebase service key:", err);
-  process.exit(1); // Stop server if Firebase cannot initialize
+  process.exit(1); 
 }
 
 // Initialize Firebase admin
@@ -280,13 +280,30 @@ async function run() {
   // get 3 upcoming data 
   // Get latest 3 approved & paid clubs for Featured section
 // Get top 3 clubs with highest membernumber, approved and paid
+// app.get('/featured-clubs', async (req, res) => {
+//   try {
+//     const featured = await clubcollection
+//       .find({ status: 'approved', paymentStatus: 'paid' })
+//       .sort({ membernumber: -1 }) // membernumber descending
+//       .limit(3)
+//       .toArray();
+
+//     res.send(featured);
+//   } catch (err) {
+//     console.error('Error fetching featured clubs:', err);
+//     res.status(500).send({ message: 'Server error' });
+//   }
+// });
+
 app.get('/featured-clubs', async (req, res) => {
   try {
-    const featured = await clubcollection
-      .find({ status: 'approved', paymentStatus: 'paid' })
-      .sort({ membernumber: -1 }) // membernumber descending
-      .limit(3)
-      .toArray();
+    const featured = await clubcollection.aggregate([
+      { $match: { status: 'approved', paymentStatus: 'paid' } },
+      { $addFields: { membernumberNum: { $toInt: "$membernumber" } } },
+      { $sort: { membernumberNum: -1 } },
+      { $limit: 3 },
+      { $project: { membernumberNum: 0 } } 
+    ]).toArray();
 
     res.send(featured);
   } catch (err) {
@@ -294,8 +311,6 @@ app.get('/featured-clubs', async (req, res) => {
     res.status(500).send({ message: 'Server error' });
   }
 });
-
-
   
   // ================= PAYMENT SUCCESS =================
   app.patch('/payment-success', async (req, res) => {
@@ -350,7 +365,7 @@ app.post('/create-event-payment', verifyFBToken, async (req, res) => {
   }
 
   try {
-    // Already registered চেক (ObjectId দিয়ে)
+    // Already registered 
     const alreadyRegistered = await eventRegisterCollection.findOne({
       eventId: eventObjectId,
       email,
@@ -552,7 +567,7 @@ app.post('/event-register-free', verifyFBToken, async (req, res) => {
       clubName: event.clubName || '',
     });
 
-    // attendees +1 করা
+    
     await eventcollection.updateOne(
       { _id: eventObjectId },
       { $inc: { attendees: 1 } }
