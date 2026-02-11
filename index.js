@@ -83,6 +83,72 @@ const clubMemberCollection = db.collection('clubMembers');
     next();
   };
 
+
+  //add ha
+
+    // ================= HELPER: Check if user is admin =================
+  const isAdmin = async (email) => {
+    const user = await usercollection.findOne({ email });
+    return user?.role === 'admin';
+  };
+    // ================= NEW ROUTE: Event creator / admin দেখতে পারবে কারা কারা রেজিস্টার করেছে =================
+  app.get('/events/:id/registrants', verifyFBToken, async (req, res) => {
+    const eventId = req.params.id;
+    const requesterEmail = req.decoded_email;
+
+    try {
+      const event = await eventcollection.findOne({ _id: new ObjectId(eventId) });
+      if (!event) {
+        return res.status(404).json({
+          success: false,
+          message: 'Event not found'
+        });
+      }
+
+      // শুধু creator বা admin অ্যাক্সেস পাবে
+      const requesterIsAdmin = await isAdmin(requesterEmail);
+      if (event.createrEmail !== requesterEmail && !requesterIsAdmin) {
+        return res.status(403).json({
+          success: false,
+          message: 'Forbidden: Only event creator or admin can view registrants'
+        });
+      }
+
+      // Registrants list (paid + free দুটোই)
+      const registrants = await eventRegisterCollection
+        .find({ eventId: new ObjectId(eventId) })
+        .sort({ registeredAt: -1 })   // নতুন থেকে পুরানো
+        .toArray();
+
+      // সুন্দর করে response ফরম্যাট
+      const formattedList = registrants.map(r => ({
+        email: r.email,
+        registeredAt: r.registeredAt,
+        paymentStatus: r.paymentStatus || 'free',
+        amount: r.amount || 0,
+        transactionId: r.transactionId || null,
+        paidAt: r.paidAt || null
+      }));
+
+      res.status(200).json({
+        success: true,
+        eventId: eventId,
+        eventTitle: event.title,
+        totalRegistrants: registrants.length,
+        currentAttendees: event.attendees || 0,
+        maxAttendees: event.maxAttendees || 'Unlimited',
+        registrants: formattedList
+      });
+    } catch (err) {
+      console.error('Error fetching registrants:', err);
+      res.status(500).json({
+        success: false,
+        message: 'Server error while fetching registrants list'
+      });
+    }
+  });
+  //jg
+
   // ================= GET EVENTS BY CLUB =================
   app.get('/clubs/:id/events', async (req, res) => {
     const clubId = req.params.id;
@@ -607,6 +673,58 @@ app.post('/event-register-free', verifyFBToken, async (req, res) => {
 
 
 // ==================== club check out ====================
+// app.post('/create-club-checkout-session', verifyFBToken, async (req, res) => {
+//   const info = req.body;
+//   const userEmail = req.decoded_email;
+
+//   if (!info._id || !info.membershipFee) {
+//     return res.status(400).send({ error: 'Club ID or membership fee missing' });
+//   }
+
+//   const clubId = info._id;
+//   try {
+//     // Check if already a member
+//     const existingMember = await clubMemberCollection.findOne({
+//       clubId: new ObjectId(clubId),
+//       userEmail,
+//     });
+//     if (existingMember) {
+//       return res.status(400).send({ error: 'You are already a paid member of this club' });
+//     }
+
+//     const session = await stripe.checkout.sessions.create({
+//       payment_method_types: ['card'],
+//       customer_email: userEmail,
+//       line_items: [
+//         {
+//           price_data: {
+//             currency: 'usd',
+//             unit_amount: Number(info.membershipFee) * 100,
+//             product_data: {
+//               name: info.clubName || 'Club Membership',
+//             },
+//           },
+//           quantity: 1,
+//         },
+//       ],
+//       mode: 'payment',
+//       metadata: {
+//         clubId: clubId,
+//         clubName: info.clubName,
+//         type: 'club_membership',
+//         userEmail: userEmail,  // Add for safety
+//       },
+//       success_url: `${process.env.SITE_DOMAIN}/club-payment-success?session_id={CHECKOUT_SESSION_ID}`,
+//       cancel_url: `${process.env.SITE_DOMAIN}/club-payment-cancelled`,
+//     });
+//     console.log('Club checkout created:', session.id, session.url);
+//     res.send({ url: session.url });
+//   } catch (err) {
+//     console.error('Club checkout error:', err);
+//     res.status(500).send({ error: err.message || 'Failed to create club checkout' });
+//   }
+// });
+// ==================== club check out ====================
 app.post('/create-club-checkout-session', verifyFBToken, async (req, res) => {
   const info = req.body;
   const userEmail = req.decoded_email;
@@ -616,16 +734,32 @@ app.post('/create-club-checkout-session', verifyFBToken, async (req, res) => {
   }
 
   const clubId = info._id;
+
   try {
-    // Check if already a member
+    // ১. Already member in clubMemberCollection?
     const existingMember = await clubMemberCollection.findOne({
       clubId: new ObjectId(clubId),
       userEmail,
+      paymentStatus: 'paid'
     });
+
     if (existingMember) {
       return res.status(400).send({ error: 'You are already a paid member of this club' });
     }
 
+    // ২. Recent pending payment আছে কি না (idempotency check)
+    const recentPayment = await paymentcollection.findOne({
+      userid: clubId,
+      customeremail: userEmail,
+      paymentstatus: 'pending',
+      paidAt: { $gt: new Date(Date.now() - 10 * 60 * 1000) } // last 10 min
+    });
+
+    if (recentPayment) {
+      return res.status(400).send({ error: 'Payment already in progress. Please check your dashboard' });
+    }
+
+    // ৩. Stripe session create
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       customer_email: userEmail,
@@ -646,11 +780,12 @@ app.post('/create-club-checkout-session', verifyFBToken, async (req, res) => {
         clubId: clubId,
         clubName: info.clubName,
         type: 'club_membership',
-        userEmail: userEmail,  // Add for safety
+        userEmail: userEmail,  // safety
       },
       success_url: `${process.env.SITE_DOMAIN}/club-payment-success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.SITE_DOMAIN}/club-payment-cancelled`,
     });
+
     console.log('Club checkout created:', session.id, session.url);
     res.send({ url: session.url });
   } catch (err) {
@@ -661,33 +796,101 @@ app.post('/create-club-checkout-session', verifyFBToken, async (req, res) => {
 // ==================== club payment SUCCESS ROUTE ====================
 
 // ==================== club payment SUCCESS ROUTE ====================
+// app.patch('/club-payment-success', async (req, res) => {
+//   try {
+//     const sessionId = req.query.session_id;
+//     if (!sessionId) {
+//       return res.status(400).send({ error: 'session_id missing' });
+//     }
+//     const session = await stripe.checkout.sessions.retrieve(sessionId);
+//     console.log('Club session retrieved:', session.id, session.payment_status, session.metadata);
+//     if (session.payment_status !== 'paid') {
+//       return res.status(400).send({ error: 'Payment not completed' });
+//     }
+//     const clubId = session.metadata.clubId;
+//     const userEmail = session.metadata.userEmail || session.customer_details?.email;
+//     if (!clubId || !userEmail) {
+//       return res.status(400).send({ error: 'clubId or userEmail missing in metadata' });
+//     }
+
+//     // Check duplicate (idempotency)
+//     const existingMember = await clubMemberCollection.findOne({
+//       clubId: new ObjectId(clubId),
+//       userEmail,
+//     });
+//     if (existingMember) {
+//       return res.send({ success: true, message: 'Already a member' });
+//     }
+
+//     // Insert membership
+//     await clubMemberCollection.insertOne({
+//       clubId: new ObjectId(clubId),
+//       userEmail,
+//       paymentStatus: 'paid',
+//       transactionId: session.payment_intent,
+//       joinedAt: new Date(),
+//       amount: session.amount_total / 100,
+//     });
+
+//     // Increment membernumber
+//     await clubcollection.updateOne(
+//       { _id: new ObjectId(clubId) },
+//       { $inc: { membernumber: 1 } }
+//     );
+
+//     // Save payment history (keep your existing paymentcollection insert if needed)
+//     const payment = {
+//       amount: session.amount_total / 100,
+//       currency: session.currency,
+//       customeremail: userEmail,
+//       userid: clubId,  // Or change to userEmail
+//       clubname: session.metadata.clubName,
+//       transactionid: session.payment_intent,
+//       paymentstatus: session.payment_status,
+//       paidAt: new Date(),
+//       type: 'club_membership'
+//     };
+//     await paymentcollection.insertOne(payment);
+
+//     res.send({ success: true });
+//   } catch (err) {
+//     console.error('Club success error:', err);
+//     res.status(500).send({ error: 'Club payment failed' });
+//   }
+// });
 app.patch('/club-payment-success', async (req, res) => {
   try {
     const sessionId = req.query.session_id;
     if (!sessionId) {
       return res.status(400).send({ error: 'session_id missing' });
     }
+
     const session = await stripe.checkout.sessions.retrieve(sessionId);
     console.log('Club session retrieved:', session.id, session.payment_status, session.metadata);
+
     if (session.payment_status !== 'paid') {
       return res.status(400).send({ error: 'Payment not completed' });
     }
+
     const clubId = session.metadata.clubId;
     const userEmail = session.metadata.userEmail || session.customer_details?.email;
+
     if (!clubId || !userEmail) {
       return res.status(400).send({ error: 'clubId or userEmail missing in metadata' });
     }
 
-    // Check duplicate (idempotency)
-    const existingMember = await clubMemberCollection.findOne({
+   
+    const existingSession = await clubMemberCollection.findOne({
       clubId: new ObjectId(clubId),
       userEmail,
+      transactionId: session.payment_intent
     });
-    if (existingMember) {
-      return res.send({ success: true, message: 'Already a member' });
+
+    if (existingSession) {
+      console.log('Idempotent: Already processed this payment');
+      return res.send({ success: true, message: 'Payment already processed' });
     }
 
-    // Insert membership
     await clubMemberCollection.insertOne({
       clubId: new ObjectId(clubId),
       userEmail,
@@ -697,18 +900,18 @@ app.patch('/club-payment-success', async (req, res) => {
       amount: session.amount_total / 100,
     });
 
-    // Increment membernumber
+    // ৩. Increment membernumber (একবারই হবে idempotency-এর কারণে)
     await clubcollection.updateOne(
       { _id: new ObjectId(clubId) },
       { $inc: { membernumber: 1 } }
     );
 
-    // Save payment history (keep your existing paymentcollection insert if needed)
+    // ৪. Payment history save
     const payment = {
       amount: session.amount_total / 100,
       currency: session.currency,
       customeremail: userEmail,
-      userid: clubId,  // Or change to userEmail
+      userid: clubId,
       clubname: session.metadata.clubName,
       transactionid: session.payment_intent,
       paymentstatus: session.payment_status,
@@ -723,7 +926,6 @@ app.patch('/club-payment-success', async (req, res) => {
     res.status(500).send({ error: 'Club payment failed' });
   }
 });
-
 // Check if current user is member
 app.get('/clubs/:id/is-member', verifyFBToken, async (req, res) => {
   const clubId = req.params.id;
@@ -780,6 +982,8 @@ app.delete('/clubs/:id', verifyFBToken, async (req, res) => {
     res.status(500).send({ message: 'Server error' });
   }
 });
+
+
 // ================= GET SINGLE EVENT =================
 // ================= GET SINGLE EVENT =================
 app.get('/events/:id', async (req, res) => {
@@ -885,15 +1089,44 @@ app.get('/events/:id', async (req, res) => {
   });
 
   // ================= PAYMENT HISTORY =================
-  app.get('/payments', verifyFBToken, async (req, res) => {
-    const email = req.query.email;
-    if (!email) return res.status(400).send({ message: 'Email query missing' });
-    if (email !== req.decoded_email) return res.status(403).send({ message: 'Forbidden access' });
+  // app.get('/payments', verifyFBToken, async (req, res) => {
+  //   const email = req.query.email;
+  //   if (!email) return res.status(400).send({ message: 'Email query missing' });
+  //   if (email !== req.decoded_email) return res.status(403).send({ message: 'Forbidden access' });
+  //   const clubs = await clubcollection.find({ createremail: email }).toArray();
+  //   const clubIds = clubs.map(club => club._id.toString());
+  //   const payments = await paymentcollection.find({ userid: { $in: clubIds } }).sort({ paidAt: -1 }).toArray();
+  //   res.send(payments);
+  // });
+  // ================= PAYMENT HISTORY =================
+app.get('/payments', verifyFBToken, async (req, res) => {
+  const email = req.query.email;
+  if (!email) return res.status(400).send({ message: 'Email query missing' });
+  if (email !== req.decoded_email) return res.status(403).send({ message: 'Forbidden access' });
+
+  try {
+
     const clubs = await clubcollection.find({ createremail: email }).toArray();
     const clubIds = clubs.map(club => club._id.toString());
-    const payments = await paymentcollection.find({ userid: { $in: clubIds } }).sort({ paidAt: -1 }).toArray();
+
+    
+    const payments = await paymentcollection
+      .find({
+        userid: { $in: clubIds },
+        $or: [
+          { type: { $ne: 'club_membership' } },           
+          { type: { $exists: false } }                   
+        ]
+      })
+      .sort({ paidAt: -1 })
+      .toArray();
+
     res.send(payments);
-  });
+  } catch (err) {
+    console.error('Payment history error:', err);
+    res.status(500).send({ message: 'Server error fetching payments' });
+  }
+});
 }
 run().catch(console.dir);
 
